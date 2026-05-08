@@ -24,6 +24,100 @@ func ProjectSlug(cwd string) string {
 	return slugRe.ReplaceAllString(cwd, "-")
 }
 
+// LastGitBranch returns the most recent non-empty `gitBranch` field
+// recorded in projDir/<sessionID>.jsonl, or "" if none. Each Claude Code
+// session entry stamps the agent's working branch at write time; this
+// recovers it for diff display when the working tree's HEAD has moved
+// off the agent's branch.
+func LastGitBranch(projDir, sessionID string) string {
+	if sessionID == "" {
+		return ""
+	}
+	f, err := os.Open(filepath.Join(projDir, sessionID+".jsonl"))
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 1024*1024), 10*1024*1024)
+
+	type branchOnly struct {
+		GitBranch string `json:"gitBranch"`
+	}
+
+	var last string
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+		var entry branchOnly
+		if json.Unmarshal(line, &entry) != nil {
+			continue
+		}
+		if entry.GitBranch != "" {
+			last = entry.GitBranch
+		}
+	}
+	return last
+}
+
+// FindProjDirByScan walks every subdirectory of projectsDir looking for one
+// that contains <sessionID>.jsonl. Last-resort fallback for when no candidate
+// path could produce the right slug — typically because the agent's worktree
+// has been deleted, so repo.Resolve returns no topology candidates. Cost is
+// one ReadDir + one Stat per project subdir (tens of subdirs in practice).
+func FindProjDirByScan(projectsDir, sessionID string) string {
+	if sessionID == "" {
+		return ""
+	}
+	entries, err := os.ReadDir(projectsDir)
+	if err != nil {
+		return ""
+	}
+	target := sessionID + ".jsonl"
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		path := filepath.Join(projectsDir, e.Name(), target)
+		if _, err := os.Stat(path); err == nil {
+			return filepath.Join(projectsDir, e.Name())
+		}
+	}
+	return ""
+}
+
+// PickProjDir tries each non-empty candidate path's ProjectSlug and returns
+// the first projectsDir/<slug> directory that contains <sessionID>.jsonl.
+// Returns "" if no candidate matches.
+//
+// Candidate ordering matters: pass paths most likely to be Claude Code's
+// launch cwd first (agent.Cwd, agent.WorktreeCwd) before topology-derived
+// fallbacks (top.Worktree, top.Source). Duplicate slugs are stat-tested
+// only once.
+func PickProjDir(projectsDir, sessionID string, candidates ...string) string {
+	if sessionID == "" {
+		return ""
+	}
+	seen := make(map[string]struct{}, len(candidates))
+	for _, c := range candidates {
+		if c == "" {
+			continue
+		}
+		slug := ProjectSlug(c)
+		if _, dup := seen[slug]; dup {
+			continue
+		}
+		seen[slug] = struct{}{}
+		if _, err := os.Stat(filepath.Join(projectsDir, slug, sessionID+".jsonl")); err == nil {
+			return filepath.Join(projectsDir, slug)
+		}
+	}
+	return ""
+}
+
 // jsonlEntry is the raw structure of a Claude Code session JSONL line.
 type jsonlEntry struct {
 	Type      string          `json:"type"`
@@ -1234,13 +1328,4 @@ func Locate(sessionsDir string, candidates ...string) string {
 		}
 	}
 	return best.SessionID
-}
-
-// FindSessionIDIn is a thin compatibility shim over Locate for callers that
-// only have a single cwd. Prefer Locate with a richer candidate set when
-// you have one available (e.g. via repo.Resolve).
-//
-// Deprecated: use Locate.
-func FindSessionIDIn(sessionsDir, cwd string) string {
-	return Locate(sessionsDir, cwd)
 }

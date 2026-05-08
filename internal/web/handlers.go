@@ -117,9 +117,11 @@ func (s *Server) handleConversation(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "agent not found"})
 		return
 	}
-	slug := conversation.ProjectSlug(agent.Cwd)
-	projDir := filepath.Join(s.cfg.Profile.ProjectsDir, slug)
-	entries := conversation.ReadConversation(projDir, agent.SessionID, 100)
+	if agent.ProjDir == "" || agent.SessionID == "" {
+		writeJSON(w, http.StatusOK, []struct{}{})
+		return
+	}
+	entries := conversation.ReadConversation(agent.ProjDir, agent.SessionID, 100)
 	if entries == nil {
 		writeJSON(w, http.StatusOK, []struct{}{})
 		return
@@ -134,9 +136,11 @@ func (s *Server) handleActivity(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "agent not found"})
 		return
 	}
-	slug := conversation.ProjectSlug(agent.Cwd)
-	projDir := filepath.Join(s.cfg.Profile.ProjectsDir, slug)
-	jsonlPath := filepath.Join(projDir, agent.SessionID+".jsonl")
+	if agent.ProjDir == "" || agent.SessionID == "" {
+		writeJSON(w, http.StatusOK, []struct{}{})
+		return
+	}
+	jsonlPath := filepath.Join(agent.ProjDir, agent.SessionID+".jsonl")
 	entries := conversation.ReadActivityLog(jsonlPath, 500)
 	if entries == nil {
 		writeJSON(w, http.StatusOK, []struct{}{})
@@ -158,20 +162,28 @@ type diffFile struct {
 	Deletions int    `json:"deletions"`
 }
 
-// findMergeBase returns the merge-base commit between HEAD and main/master,
-// or "HEAD" as a fallback (which shows only uncommitted changes).
-func findMergeBase(dir string) string {
+// findMergeBase returns the merge-base commit between `ref` and main/master,
+// or `ref` as a fallback. Pass "HEAD" for the legacy behaviour.
+func findMergeBase(dir, ref string) string {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	for _, base := range []string{"origin/main", "origin/master", "main", "master"} {
-		out, err := cmdRunner.Output(ctx, "git", "-C", dir, "merge-base", "HEAD", base)
+		out, err := cmdRunner.Output(ctx, "git", "-C", dir, "merge-base", ref, base)
 		if err == nil {
 			if s := strings.TrimSpace(string(out)); s != "" {
 				return s
 			}
 		}
 	}
-	return "HEAD"
+	return ref
+}
+
+// branchExists reports whether `name` resolves to a commit in dir's repo.
+func branchExists(dir, name string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
+	_, err := cmdRunner.Output(ctx, "git", "-C", dir, "rev-parse", "--verify", name+"^{commit}")
+	return err == nil
 }
 
 // handleDiff returns the git diff for an agent's working directory.
@@ -187,10 +199,18 @@ func (s *Server) handleDiff(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	base := findMergeBase(dir)
+	ref := "HEAD"
+	if b := conversation.LastGitBranch(agent.ProjDir, agent.SessionID); b != "" && branchExists(dir, b) {
+		ref = b
+	}
+	base := findMergeBase(dir, ref)
+	diffArg := base
+	if ref != "HEAD" {
+		diffArg = base + ".." + ref
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
-	out, err := cmdRunner.Output(ctx, "git", "-C", dir, "diff", base, "--no-color")
+	out, err := cmdRunner.Output(ctx, "git", "-C", dir, "diff", diffArg, "--no-color")
 	if err != nil {
 		writeJSON(w, http.StatusOK, diffResponse{})
 		return
@@ -303,17 +323,19 @@ func (s *Server) handlePlan(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "agent not found"})
 		return
 	}
-	slug := conversation.ProjectSlug(agent.Cwd)
-	projDir := filepath.Join(s.cfg.Profile.ProjectsDir, slug)
+	if agent.ProjDir == "" || agent.SessionID == "" {
+		writeJSON(w, http.StatusOK, map[string]string{"content": ""})
+		return
+	}
 	// Prefer the delegated-Plan-subagent pointer if set; the plan is persisted
 	// only inside the parent JSONL as a tool_result.
 	if agent.DelegatedPlanToolUseID != "" {
-		if content := conversation.ReadDelegatedPlanContent(projDir, agent.SessionID, agent.DelegatedPlanToolUseID); content != "" {
+		if content := conversation.ReadDelegatedPlanContent(agent.ProjDir, agent.SessionID, agent.DelegatedPlanToolUseID); content != "" {
 			writeJSON(w, http.StatusOK, map[string]string{"content": content})
 			return
 		}
 	}
-	planSlug := conversation.ReadPlanSlug(projDir, agent.SessionID)
+	planSlug := conversation.ReadPlanSlug(agent.ProjDir, agent.SessionID)
 	if planSlug == "" {
 		writeJSON(w, http.StatusOK, map[string]string{"content": ""})
 		return
@@ -329,9 +351,11 @@ func (s *Server) handleUsage(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "agent not found"})
 		return
 	}
-	slug := conversation.ProjectSlug(agent.Cwd)
-	projDir := filepath.Join(s.cfg.Profile.ProjectsDir, slug)
-	u := usage.ReadUsage(projDir, agent.SessionID)
+	if agent.ProjDir == "" || agent.SessionID == "" {
+		writeJSON(w, http.StatusOK, domain.Usage{})
+		return
+	}
+	u := usage.ReadUsage(agent.ProjDir, agent.SessionID)
 	writeJSON(w, http.StatusOK, u)
 }
 
@@ -462,9 +486,11 @@ func (s *Server) handleSubagents(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "agent not found"})
 		return
 	}
-	slug := conversation.ProjectSlug(agent.Cwd)
-	projDir := filepath.Join(s.cfg.Profile.ProjectsDir, slug)
-	subs := conversation.FindSubagents(projDir, agent.SessionID)
+	if agent.ProjDir == "" || agent.SessionID == "" {
+		writeJSON(w, http.StatusOK, []struct{}{})
+		return
+	}
+	subs := conversation.FindSubagents(agent.ProjDir, agent.SessionID)
 	if subs == nil {
 		writeJSON(w, http.StatusOK, []struct{}{})
 		return
