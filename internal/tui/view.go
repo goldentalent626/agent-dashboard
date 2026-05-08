@@ -1124,6 +1124,9 @@ func (m model) renderRightPanel() string {
 		if agent.PermissionMode != "" && agent.PermissionMode != "default" {
 			metaParts = append(metaParts, permissionModeStyle(agent.PermissionMode))
 		}
+		if agent.Effort != "" {
+			metaParts = append(metaParts, lipgloss.NewStyle().Foreground(effortColor).Render(agent.Effort))
+		}
 		header = append(header, " "+strings.Join(metaParts, helpStyle.Render(" | ")))
 		header = append(header, "")
 
@@ -1221,8 +1224,14 @@ func (m model) renderRightPanel() string {
 			messageLabel = " " + lipgloss.NewStyle().Foreground(blockColor).Bold(true).
 				Render(blockLabel) + focusMarker(focusMessage) + scrollHint(m.messageVP)
 		} else if isWaiting(rpEffState) {
-			messageLabel = " " + lipgloss.NewStyle().Foreground(questionColor).Bold(true).
-				Render("── Agent is waiting") + focusMarker(focusMessage) + scrollHint(m.messageVP) +
+			waitColor := questionColor
+			waitLabel := "── Agent is asking a question"
+			if rpEffState == "error" {
+				waitColor = errorColor
+				waitLabel = "── Agent hit an error"
+			}
+			messageLabel = " " + lipgloss.NewStyle().Foreground(waitColor).Bold(true).
+				Render(waitLabel) + focusMarker(focusMessage) + scrollHint(m.messageVP) +
 				" " + helpStyle.Render(strings.Repeat("─", 9))
 		} else if isReview(rpEffState) || isPR(rpEffState) || isMerged(rpEffState) {
 			if m.mode == modeReply {

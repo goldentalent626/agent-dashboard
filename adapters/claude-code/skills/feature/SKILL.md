@@ -147,7 +147,7 @@ Phase order: research first, interview second, plan mode third, submit fourth. P
 - If `.env-setup-failed` exists: surface the error and halt.
 - If neither file exists: the background agent is still running — wait for it to finish before proceeding.
 
-**Effort note:** This skill runs at `max` reasoning effort throughout. To save tokens during implementation, run `/effort high` before continuing — `effort: max` resumes on the next invocation.
+**Effort note:** When launched via the agent-dashboard's New Agent flow, this skill spawns with `--effort high` on the CLI, which Claude Code pins at the session level. The dynamic dispatcher in agent-state-fast.js bumps effort to `max` automatically while `permission_mode='plan'` (EnterPlanMode active) and drops back to `high` on exit — so planning runs at max effort without paying that cost during implementation. When invoked as a slash command inside an existing claude session, you can run `/effort max` before entering plan mode and `/effort high` (or lower) before implementation.
 
 **Delegation gate:** Invoke `/codex:setup` to check Codex CLI availability. If the output contains `"ready": true`, delegate **only if** the user explicitly requested Codex delegation OR the plan touches 10+ files / ~3,000+ lines of implementation. Below that threshold, the orchestration overhead (skill loading, prompt construction, subagent context, result parsing, review) costs more tokens than Claude implementing directly. If delegating, invoke `/codex-delegate` with the approved plan (Phase 2) as implementation context, then skip to the phase gate. Otherwise, proceed below.
 
