@@ -31,7 +31,13 @@ dino_game     = false  # enable Chrome-style dino runner game (Shift+G)
 
 [usage]
 rate_limit_poll_seconds = 60  # how often to fetch rate limits from Anthropic API (0 = disable)
+
+[effort]
+plan    = "high"  # thinking-effort level pinned while permission_mode='plan'
+default = "high"  # thinking-effort level pinned at spawn and restored on plan exit
 ```
+
+The `[effort]` levels feed the `/effort` slash command Claude Code accepts (`low | medium | high | xhigh | max`). The `agent-state-fast` adapter hook swaps in `plan` when the agent enters plan mode (`EnterPlanMode`) and restores `default` on exit. The `feature`, `fix`, and `refactor` skills additionally declare `effort: max` in their frontmatter, which Claude Code pins for the skill's lifetime when the skill is invoked as a slash command inside an existing session.
 
 ## Settings table
 
@@ -46,6 +52,8 @@ rate_limit_poll_seconds = 60  # how often to fetch rate limits from Anthropic AP
 | `experimental` | `ascii_pet` | `false` | Show animated ASCII pet in the left panel |
 | `experimental` | `dino_game` | `false` | Show Chrome-style dino runner game in the left panel (Shift+G to toggle) |
 | `usage` | `rate_limit_poll_seconds` | `60` | How often (in seconds) to fetch rate-limit data from the Anthropic OAuth API. Set to `0` to disable. |
+| `effort` | `plan` | `"high"` | Thinking-effort level pinned while the agent is in plan mode. One of `low`, `medium`, `high`, `xhigh`, `max`. |
+| `effort` | `default` | `"high"` | Thinking-effort level pinned at spawn and restored when the agent exits plan mode. Same value set as `plan`. |
 
 ## Environment variables
 
