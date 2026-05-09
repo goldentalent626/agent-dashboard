@@ -924,6 +924,46 @@ describe('fast hook state updates (per-agent files)', () => {
 // buildUpdate must surface this transition by setting update.effort so the
 // hook layer can dispatch /effort via tmux send-keys to the same pane.
 describe('dynamic effort on permission_mode transitions', () => {
+  // Isolate from the real ~/.agent-dashboard/settings.toml so a user's
+  // custom [effort] values don't make these default-asserting tests flaky.
+  let tmpEffortDir;
+  let origEffortDir;
+  beforeEach(() => {
+    tmpEffortDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fast-hook-effort-default-'));
+    origEffortDir = process.env.AGENT_DASHBOARD_DIR;
+    process.env.AGENT_DASHBOARD_DIR = tmpEffortDir;
+  });
+  afterEach(() => {
+    if (origEffortDir === undefined) delete process.env.AGENT_DASHBOARD_DIR;
+    else process.env.AGENT_DASHBOARD_DIR = origEffortDir;
+    fs.rmSync(tmpEffortDir, { recursive: true, force: true });
+  });
+
+  it('entering plan mode bumps effort to max', () => {
+    const existing = {
+      target: 'main:1.0',
+      state: 'running',
+      current_tool: '',
+      permission_mode: 'default',
+      effort: 'high',
+    };
+
+    const { changed, update } = buildUpdate({
+      input: {
+        session_id: 'abc123',
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Read',
+        permission_mode: 'plan',
+      },
+      existing,
+      target: 'main:1.0',
+      tmuxPane: '%0',
+    });
+
+    assert.equal(changed, true);
+    assert.equal(update.effort, 'max');
+  });
+
   it('leaving plan mode drops effort back to high', () => {
     const existing = {
       target: 'main:1.0',
@@ -1039,12 +1079,104 @@ describe('dynamic effort on permission_mode transitions', () => {
   });
 });
 
+// User-configurable plan/default levels live in ~/.agent-dashboard/settings.toml
+// under [effort]. The dispatcher in buildUpdate must read those values so a
+// user who sets `plan = "high"` and `default = "medium"` gets those levels —
+// not the previously hard-coded "max"/"high" — on every plan-mode transition.
+describe('dynamic effort reads levels from settings.toml', () => {
+  let tmpDashboardDir;
+  let originalDashboardDir;
+
+  beforeEach(() => {
+    tmpDashboardDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fast-hook-effort-cfg-'));
+    originalDashboardDir = process.env.AGENT_DASHBOARD_DIR;
+    process.env.AGENT_DASHBOARD_DIR = tmpDashboardDir;
+  });
+
+  afterEach(() => {
+    if (originalDashboardDir === undefined) delete process.env.AGENT_DASHBOARD_DIR;
+    else process.env.AGENT_DASHBOARD_DIR = originalDashboardDir;
+    fs.rmSync(tmpDashboardDir, { recursive: true, force: true });
+  });
+
+  it('entering plan mode dispatches the [effort].plan value from settings.toml', () => {
+    fs.writeFileSync(path.join(tmpDashboardDir, 'settings.toml'),
+      '[effort]\nplan = "high"\ndefault = "medium"\n');
+
+    const existing = {
+      target: 'main:1.0',
+      state: 'running',
+      current_tool: '',
+      permission_mode: 'default',
+      effort: 'medium',
+    };
+
+    const { update } = buildUpdate({
+      input: {
+        session_id: 'abc123',
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Read',
+        permission_mode: 'plan',
+      },
+      existing,
+      target: 'main:1.0',
+      tmuxPane: '%0',
+    });
+
+    assert.equal(update.effort, 'high',
+      'plan-mode entry must use [effort].plan from settings.toml, not the hard-coded "max"');
+  });
+
+  it('leaving plan mode dispatches the [effort].default value from settings.toml', () => {
+    fs.writeFileSync(path.join(tmpDashboardDir, 'settings.toml'),
+      '[effort]\nplan = "high"\ndefault = "medium"\n');
+
+    const existing = {
+      target: 'main:1.0',
+      state: 'plan',
+      current_tool: '',
+      permission_mode: 'plan',
+      effort: 'high',
+    };
+
+    const { update } = buildUpdate({
+      input: {
+        session_id: 'abc123',
+        hook_event_name: 'PostToolUse',
+        tool_name: 'Read',
+        permission_mode: 'default',
+      },
+      existing,
+      target: 'main:1.0',
+      tmuxPane: '%0',
+    });
+
+    assert.equal(update.effort, 'medium',
+      'plan-mode exit must use [effort].default from settings.toml, not the hard-coded "high"');
+  });
+});
+
 // Dispatch gate: keystroke injection (`tmux send-keys '/effort <level>\r'`)
 // must not fire when the user is composing input (plan-review reply,
 // AskUserQuestion answer, etc.) — the keystrokes would land in the user's
 // text. State-file effort updates still happen so the dashboard badge stays
 // accurate; only the in-pane dispatch is suppressed.
 describe('effort dispatch gate (no inject while user is composing)', () => {
+  // Isolate from the real ~/.agent-dashboard/settings.toml so a user's
+  // custom [effort] values don't make these default-asserting tests flaky.
+  let tmpEffortDir;
+  let origEffortDir;
+  beforeEach(() => {
+    tmpEffortDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fast-hook-effort-gate-'));
+    origEffortDir = process.env.AGENT_DASHBOARD_DIR;
+    process.env.AGENT_DASHBOARD_DIR = tmpEffortDir;
+  });
+  afterEach(() => {
+    if (origEffortDir === undefined) delete process.env.AGENT_DASHBOARD_DIR;
+    else process.env.AGENT_DASHBOARD_DIR = origEffortDir;
+    fs.rmSync(tmpEffortDir, { recursive: true, force: true });
+  });
+
   it('does not flag dispatch when existing state is plan (regression: replying to plan)', () => {
     // Reproduces the reported bug: user is in the plan-review UI typing a
     // reply when an effort transition is detected (e.g. permission_mode
