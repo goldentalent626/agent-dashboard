@@ -46,10 +46,20 @@ func mockReadAgentState(m *mocks.MockRunner) {
 // createTestServer sets up a test server with agent state files.
 func createTestServer(t *testing.T, agents ...domain.Agent) (*httptest.Server, string) {
 	t.Helper()
+	return createTestServerWithCfg(t, nil, agents...)
+}
+
+// createTestServerWithCfg lets a test mutate cfg after the defaults are loaded
+// (e.g. to set Settings.Harness.Pi.Provider) before the server is built.
+func createTestServerWithCfg(t *testing.T, mutate func(*domain.Config), agents ...domain.Agent) (*httptest.Server, string) {
+	t.Helper()
 	cfg := config.DefaultConfig()
 	cfg.Profile.Command = "claude"
 	stateDir := t.TempDir()
 	cfg.Profile.StateDir = stateDir
+	if mutate != nil {
+		mutate(&cfg)
+	}
 
 	agentsDir := filepath.Join(stateDir, "agents")
 	os.MkdirAll(agentsDir, 0700)
@@ -76,86 +86,6 @@ func postCreate(t *testing.T, ts *httptest.Server, body string) *http.Response {
 		t.Fatalf("POST /api/agents/create: %v", err)
 	}
 	return resp
-}
-
-// Skills that declare `effort: <level>` in their SKILL.md frontmatter are not
-// consistently honored by Claude Code once permission_mode flips on
-// EnterPlanMode. The dashboard pins effort at spawn via two channels:
-//   - --effort <level> CLI flag (CC reads it directly)
-//   - CLAUDE_CODE_EFFORT_LEVEL=<level> env-var prefix (so the SessionStart
-//     hook can persist the level to the agent state file for display)
-//
-// The baseline level is now sourced from settings.toml's [effort] default
-// (defaults to "high"). The dynamic dispatcher in agent-state-fast.js
-// independently swaps to settings.toml's [effort] plan during plan mode.
-func TestBuildAgentCommand_EffortOptedSkillsGetFlagAndEnv(t *testing.T) {
-	for _, skill := range []string{"feature", "fix", "refactor"} {
-		t.Run(skill, func(t *testing.T) {
-			got := buildAgentCommand("claude", skill, "", "high")
-			want := "CLAUDE_CODE_EFFORT_LEVEL=high claude --effort high '/" + skill + "'"
-			if got != want {
-				t.Errorf("buildAgentCommand(claude, %q, \"\", \"high\") = %q, want %q", skill, got, want)
-			}
-		})
-	}
-}
-
-func TestBuildAgentCommand_NonOptedSkillsOmitFlagAndEnv(t *testing.T) {
-	for _, skill := range []string{"chore", "investigate", "rca", "pr"} {
-		t.Run(skill, func(t *testing.T) {
-			got := buildAgentCommand("claude", skill, "", "high")
-			want := "claude '/" + skill + "'"
-			if got != want {
-				t.Errorf("buildAgentCommand(claude, %q, \"\", \"high\") = %q, want %q", skill, got, want)
-			}
-		})
-	}
-}
-
-func TestBuildAgentCommand_EmptySkillNoFlag(t *testing.T) {
-	got := buildAgentCommand("claude", "", "", "high")
-	want := "claude"
-	if got != want {
-		t.Errorf("buildAgentCommand(claude, \"\", \"\", \"high\") = %q, want %q", got, want)
-	}
-}
-
-func TestBuildAgentCommand_EmptySkillWithMessage(t *testing.T) {
-	got := buildAgentCommand("claude", "", "do the thing", "high")
-	want := "claude 'do the thing'"
-	if got != want {
-		t.Errorf("buildAgentCommand(claude, \"\", \"do the thing\", \"high\") = %q, want %q", got, want)
-	}
-}
-
-func TestBuildAgentCommand_FeatureWithMessage(t *testing.T) {
-	got := buildAgentCommand("claude", "feature", "add login", "high")
-	want := "CLAUDE_CODE_EFFORT_LEVEL=high claude --effort high '/feature add login'"
-	if got != want {
-		t.Errorf("buildAgentCommand(claude, feature, add login, \"high\") = %q, want %q", got, want)
-	}
-}
-
-// Custom defaultEffort flows through to the spawn command for opted-in skills
-// — verifies settings.toml's [effort] default key replaces the previously
-// hard-coded "high" baseline.
-func TestBuildAgentCommand_CustomDefaultEffort(t *testing.T) {
-	got := buildAgentCommand("claude", "feature", "", "medium")
-	want := "CLAUDE_CODE_EFFORT_LEVEL=medium claude --effort medium '/feature'"
-	if got != want {
-		t.Errorf("buildAgentCommand(claude, feature, \"\", \"medium\") = %q, want %q", got, want)
-	}
-}
-
-// Empty defaultEffort omits the --effort flag entirely, even for opted-in
-// skills — supports a future "disable spawn-time pin" mode without forcing
-// callers to maintain a parallel skip list.
-func TestBuildAgentCommand_EmptyDefaultEffortOmitsFlag(t *testing.T) {
-	got := buildAgentCommand("claude", "feature", "", "")
-	want := "claude '/feature'"
-	if got != want {
-		t.Errorf("buildAgentCommand(claude, feature, \"\", \"\") = %q, want %q", got, want)
-	}
 }
 
 func TestCreateNewWindow(t *testing.T) {
@@ -328,5 +258,107 @@ func TestCreateWorktreeMatchesSameRepo(t *testing.T) {
 	json.NewDecoder(resp.Body).Decode(&result)
 	if result["target"] != "main:1.1" {
 		t.Errorf("expected target main:1.1, got %s", result["target"])
+	}
+}
+
+// TestCreate_DefaultHarnessIsClaude confirms the spawn command falls through
+// the unchanged claude path when neither settings nor request body picks pi.
+func TestCreate_DefaultHarnessIsClaude(t *testing.T) {
+	m := withMockTmuxRunner(t)
+	mockReadAgentState(m)
+
+	folder := t.TempDir()
+	existingAgent := domain.Agent{SessionID: "x", Session: "main", Window: 0, State: "running", Cwd: folder}
+	ts, _ := createTestServer(t, existingAgent)
+
+	m.On("Output", mock.Anything,
+		"list-panes", "-t", "main:0", "-F", "#{pane_index}",
+	).Return([]byte("0\n"), nil)
+
+	var capturedCmd string
+	m.On("Output", mock.Anything,
+		"split-window", "-t", "main:0", "-c", folder,
+		"-d", "-P", "-F", "#{session_name}:#{window_index}.#{pane_index}",
+		mock.MatchedBy(func(s string) bool { capturedCmd = s; return true }),
+	).Return([]byte("main:0.1\n"), nil)
+	m.On("Run", mock.Anything, "select-layout", "-t", "main:0", "tiled").Return(nil)
+
+	resp := postCreate(t, ts, `{"folder":"`+folder+`","skill":"feature"}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	if !strings.HasPrefix(capturedCmd, "CLAUDE_CODE_EFFORT_LEVEL=") {
+		t.Errorf("expected claude effort prefix, got %q", capturedCmd)
+	}
+	if !strings.Contains(capturedCmd, " claude --effort ") {
+		t.Errorf("expected claude binary invocation, got %q", capturedCmd)
+	}
+	if strings.Contains(capturedCmd, "pi --provider") {
+		t.Errorf("unexpected pi spawn in default case: %q", capturedCmd)
+	}
+}
+
+// TestCreate_HarnessOverridePi proves the per-request Harness field actually
+// routes spawn-command construction through the pi harness, including
+// settings.Harness.Pi.Provider/Model flowing through as --provider/--model.
+func TestCreate_HarnessOverridePi(t *testing.T) {
+	m := withMockTmuxRunner(t)
+	mockReadAgentState(m)
+
+	folder := t.TempDir()
+	existingAgent := domain.Agent{SessionID: "x", Session: "main", Window: 0, State: "running", Cwd: folder}
+
+	mutate := func(c *domain.Config) {
+		c.Settings.Harness.Pi.Provider = "openai"
+		c.Settings.Harness.Pi.Model = "openai-codex/gpt-5.5"
+	}
+	ts, _ := createTestServerWithCfg(t, mutate, existingAgent)
+
+	m.On("Output", mock.Anything,
+		"list-panes", "-t", "main:0", "-F", "#{pane_index}",
+	).Return([]byte("0\n"), nil)
+
+	var capturedCmd string
+	m.On("Output", mock.Anything,
+		"split-window", "-t", "main:0", "-c", folder,
+		"-d", "-P", "-F", "#{session_name}:#{window_index}.#{pane_index}",
+		mock.MatchedBy(func(s string) bool { capturedCmd = s; return true }),
+	).Return([]byte("main:0.1\n"), nil)
+	m.On("Run", mock.Anything, "select-layout", "-t", "main:0", "tiled").Return(nil)
+
+	resp := postCreate(t, ts, `{"folder":"`+folder+`","harness":"pi","message":"hello"}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	want := "pi --provider 'openai' --model 'openai-codex/gpt-5.5' 'hello'"
+	if capturedCmd != want {
+		t.Errorf("captured cmd = %q, want %q", capturedCmd, want)
+	}
+}
+
+// TestCreate_HarnessUnknownIs400 proves the registry error surfaces as a
+// 400 rather than silently coercing to claude (regression guard for the
+// silent-fallback anti-pattern called out by go-reviewer-strict).
+func TestCreate_HarnessUnknownIs400(t *testing.T) {
+	m := withMockTmuxRunner(t)
+	// Only TmuxIsAvailable fires before the 400 — skip readAgentState mocks.
+	m.On("Run", mock.Anything, "list-sessions").Return(nil)
+
+	folder := t.TempDir()
+	ts, _ := createTestServer(t)
+
+	resp := postCreate(t, ts, `{"folder":"`+folder+`","harness":"not-a-real-harness"}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", resp.StatusCode)
+	}
+	var body map[string]string
+	json.NewDecoder(resp.Body).Decode(&body)
+	if !strings.Contains(body["error"], "unknown harness") {
+		t.Errorf("expected unknown-harness error, got %q", body["error"])
 	}
 }
