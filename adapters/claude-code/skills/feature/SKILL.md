@@ -127,6 +127,30 @@ Phase order: research first, interview second, plan mode third, submit fourth. P
    No drafting the plan in assistant text until `EnterPlanMode` has been called and `permission_mode='plan'` is active.
    </HARD-GATE>
 
+   **Phase format for multi-phase plans.** If the plan has 3+ distinct work units, structure it with a `## Phases` checklist and matching `### Phase X:` headings. Step 4 reads this format to offer the dispatch probe; `/implement` parses it to drive the dispatch loop. Plans without it can't be dispatched.
+
+   ```markdown
+   ## Phases
+
+   - [ ] **Phase A: <short name>** — files: <globs>, deps: -
+   - [ ] **Phase B: <short name>** — files: <globs>, deps: A
+   - [ ] **Phase C: <short name>** — files: <globs>, deps: B
+
+   ### Phase A: <short name>
+
+   <10–50 lines: what files, what tests, what invariants, what to leave alone.>
+
+   ### Phase B: <short name>
+
+   <...>
+   ```
+
+   Rules:
+   - The `## Phases` block is the dispatch index. Phase names MUST match between checklist and `### Phase X:` headings (case-sensitive).
+   - `deps:` defaults to "depends on previous phase". Use `-` for "no dependencies".
+   - `- [ ]` = pending. `- [x]` = done. `/implement` flips these as it dispatches.
+   - **Fewer than 3 work units?** Skip this format. Inline paragraphs are fine; the probe won't fire below the threshold.
+
 4. **Submit via `ExitPlanMode`. Wait for user approval.** Pass the full plan markdown to the plan file (per CC's plan-mode workflow) and call `ExitPlanMode`. This renders the plan in CC's native plan-review UI for accept/reject.
 
    **`ExitPlanMode` is the only acceptable submission.** Pasting the plan as assistant text is a violation, even if you also call `ExitPlanMode` afterwards. The user reviews and approves through the plan-review UI — nowhere else.
@@ -136,7 +160,37 @@ Phase order: research first, interview second, plan mode third, submit fourth. P
    - Don't write the test file "to save time".
    - Don't ask "should I proceed?" in assistant text — the plan-mode UI's accept action is the approval.
 
-**Gate:** User has approved the approach via the plan-review UI. The submitted plan contains no open decisions. No code has been written yet.
+   **Post-approval actions** (immediately after the user accepts the plan, before Phase 3):
+
+   1. **Write the plan-path sentinel** (always). CC's plan-mode system prompt told you where the approved plan markdown lives (typically `~/.claude/plans/<slug>.md`). Record that path so `/implement` can find it:
+      ```bash
+      echo "<absolute-plan-path>" > .feature-plan-path
+      ```
+
+   2. **Count the phases.** Read the plan; count `- [ ]` / `- [x]` lines under `## Phases`. If there's no `## Phases` block or the count is `< 3`, skip step 3 below and start Phase 3 (inline TDD).
+
+   3. **Probe for dispatch handoff** (only when phase count ≥ 3). Call `AskUserQuestion` exactly once:
+      - Question: `"Plan has {N} phases. Continue inline here, or hand off to /implement for context isolation?"`
+      - Header: `"Dispatch"`
+      - Options (recommended first):
+        - `"Continue inline (Recommended for ≤4 phases)"` — Stay in this session; run RED → GREEN → REFACTOR per phase in order.
+        - `"Hand off to /implement"` — Exit /feature. The user invokes `/agent-dashboard:implement` in a fresh session; each phase dispatches to its own subagent.
+
+      **If `Continue inline`:** start Phase 3. The `## Phases` structure becomes documentation — inline TDD ignores the index.
+
+      **If `Hand off to /implement`:** print the message below and exit cleanly. Do not start Phase 3.
+
+      ```
+      Plan saved to <plan-path>.
+      Worktree ready at <worktree-path>.
+      To continue, run:
+
+          /agent-dashboard:implement
+
+      (Recommended: open a fresh terminal session for max context isolation.)
+      ```
+
+**Gate:** Plan approved with no open decisions. `.feature-plan-path` written. Either Phase 3 begins (inline) or the skill exited with the handoff message (dispatch).
 
 ---
 
@@ -188,7 +242,7 @@ Review all changes for correctness, security, and convention adherence. Apply al
 Triggered when the user indicates the feature has been merged upstream.
 
 1. Verify the branch is merged (warn if unmerged commits remain)
-2. Tear down environment resources: remove symlinks, stop dev servers or emulators, delete `.env-setup-done`/`.env-setup-failed` sentinel files
+2. Tear down environment resources: remove symlinks, stop dev servers or emulators, delete `.env-setup-done` / `.env-setup-failed` / `.feature-plan-path` sentinel files
 3. Remove worktree and delete branch
 4. Confirm cleanup is complete
 
@@ -209,3 +263,5 @@ If you catch yourself saying or thinking any of these, pause and re-read the rel
 - "Let me commit on main since the change is trivial" → blocked by hook anyway. Create a branch.
 - "I'll just call `gh pr create` directly" → Phase 5 violation. The `pr-skill-gate` hook will block it. Use `/agent-dashboard:pr`.
 - "I'll bundle this unrelated cleanup into the feature commit" → split it. Open a separate PR.
+- "User picked hand-off, but I'm already here — I'll just do Phase 3 myself" → exit cleanly. They opted out of inline TDD for a reason (context). Don't second-guess.
+- "I'll write `.feature-plan-path` later, after I start Phase 3" → write it now. `/implement` and resume can't find the plan without it.
