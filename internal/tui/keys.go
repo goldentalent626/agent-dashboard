@@ -50,7 +50,7 @@ const modeResetCooldown = 100 * time.Millisecond
 // These are "destructive" keys that trigger actions; navigation keys are
 // intentionally excluded so scrolling works immediately after mouse events.
 var phantomGuardedKeys = map[string]bool{
-	"x": true, "enter": true, "r": true, "m": true,
+	"x": true, "enter": true, "r": true, "m": true, "s": true,
 	"y": true, "n": true,
 	"1": true, "2": true, "3": true, "4": true, "5": true,
 	"6": true, "7": true, "8": true, "9": true,
@@ -536,16 +536,21 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.confirmMergeAgent = domain.Agent{}
 			m.confirmMergeBranch = ""
 			m.mode = modeNormal
-			if m.ghAvailable {
-				m.mergeSessionID = sessionID
-				m.mergePaneID = paneID
-				m.mergeAgent = agent
-				m.mergeBranch = branch
-				m.setStatus("Merging PR...", false)
-				return m, mergePR(agent.EffectiveDir(), branch)
+			// Re-check gh at confirm time; startup state can be stale and a
+			// silent pin-only fallback would hide unmerged work behind a
+			// misleading "merged" dashboard state.
+			if !ghIsAvailable() {
+				m.ghAvailable = false
+				m.setStatus("Cannot merge: gh CLI not available — run 'gh auth login' or install gh", true)
+				return m, nil
 			}
-			m.setStatus("Marked as merged", false)
-			return m, pinAgentStateCmd(m.statePath, sessionID, "merged")
+			m.ghAvailable = true
+			m.mergeSessionID = sessionID
+			m.mergePaneID = paneID
+			m.mergeAgent = agent
+			m.mergeBranch = branch
+			m.setStatus("Merging PR...", false)
+			return m, mergePR(agent.EffectiveDir(), branch)
 		case "n", "esc":
 			m.confirmMergeSessionID = ""
 			m.confirmMergePaneID = ""
@@ -638,6 +643,21 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.helpVisible = false
 		default:
 			// swallow all other keys
+		}
+		return m, nil
+	}
+
+	// Deps status mode: r refreshes, esc/q exits
+	if m.mode == modeDepsStatus {
+		switch key {
+		case "esc", "q":
+			m.mode = modeNormal
+			return m, nil
+		case "r":
+			// Async probe — Update must not block on subprocess calls.
+			return m, checkDepsCmd()
+		case "ctrl+c":
+			return m, tea.Quit
 		}
 		return m, nil
 	}
@@ -1091,6 +1111,10 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.updateRightContent()
 		}
 		return m, nil
+	case "s":
+		m.deps = nil
+		m.mode = modeDepsStatus
+		return m, checkDepsCmd()
 	case "a":
 		if !m.tmuxAvailable {
 			m.setStatus("Cannot create session: tmux not detected", true)

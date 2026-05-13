@@ -62,6 +62,7 @@ type model struct {
 	textInput        textinput.Model
 	tmuxAvailable    bool
 	ghAvailable      bool
+	deps             []depStatus  // cached deps for modeDepsStatus, refreshed on entry / 'r'
 	openPRSessionID  string       // stored for deferred pin in openPRMsg handler
 	mergeSessionID   string       // stored for async merge callback
 	mergePaneID      string       // stored for async merge callback
@@ -1091,6 +1092,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case ghAvailableMsg:
 		m.ghAvailable = msg.available
+		return m, nil
+
+	case depsReadyMsg:
+		m.deps = msg.deps
 		return m, nil
 
 	case mergePRMsg:

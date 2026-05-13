@@ -58,6 +58,7 @@ type postMergeCleanupMsg struct {
 	progress string // last step name, for error reporting
 }
 type ghAvailableMsg struct{ available bool }
+type depsReadyMsg struct{ deps []depStatus }
 type startupMsg struct {
 	tmuxAvailable bool
 	selfPaneID    string
@@ -116,6 +117,7 @@ const (
 	modeCreateSkill   // skill selection step of create wizard
 	modeCreateMessage // message input step of create wizard
 	modeDinoGame      // full-screen dino runner game
+	modeDepsStatus    // full-screen deps status (gh / tmux / git / codex)
 )
 
 // -- Viewport focus --
