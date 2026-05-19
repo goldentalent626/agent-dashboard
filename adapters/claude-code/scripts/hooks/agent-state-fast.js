@@ -107,18 +107,6 @@ if (require.main === module) {
   });
 }
 
-/**
- * Build the state update object from hook input and existing state.
- * Pure logic — no I/O. Returns { changed, update } where update is the
- * fields to merge, or null if nothing changed.
- *
- * @param {object} params
- * @param {object} params.input - parsed hook stdin (includes input.cwd from Claude Code)
- * @param {object} params.existing - current agent state from disk
- * @param {string} params.target - tmux target string
- * @param {string} params.tmuxPane - TMUX_PANE env value
- * @returns {{ changed: boolean, update: object|null }}
- */
 // effortTransition returns the new effort level if permission_mode is moving
 // into or out of 'plan'. Returns null when no transition (or when dynamic
 // switching is disabled via AGENT_DASHBOARD_DYNAMIC_EFFORT=0|off|false, or
@@ -138,14 +126,34 @@ function effortTransition(existingMode, newMode) {
   return null;
 }
 
+/**
+ * Build the state update object from hook input and existing state.
+ * Pure logic — no I/O. Returns { changed, update } where update is the
+ * fields to merge, or null if nothing changed.
+ *
+ * @param {object} params
+ * @param {object} params.input - parsed hook stdin (includes input.cwd from Claude Code)
+ * @param {object} params.existing - current agent state from disk
+ * @param {string} params.target - tmux target string
+ * @param {string} params.tmuxPane - TMUX_PANE env value
+ * @returns {{ changed: boolean, update: object|null }}
+ */
 function buildUpdate({ input, existing, target, tmuxPane }) {
-  // Stamp worktree_cwd the first time we observe Claude Code reporting a
-  // worktree path as input.cwd. Treated as static for the agent's lifetime —
-  // downstream features (diff viewer, PR creation, cleanup) trust this dir
-  // and shouldn't have it shifting as the agent cd's around.
+  // Stamp worktree_cwd when the main agent observes its session running in a
+  // user worktree path. Treated as static for the agent's lifetime — downstream
+  // features (diff viewer, PR creation, cleanup) trust this dir and shouldn't
+  // have it shifting as the agent cd's around.
+  //
+  // Only the MAIN agent can write worktree_cwd. A subagent's hook fires with
+  // input.cwd under `.claude/worktrees/agent-<id>/` (Claude Code's per-subagent
+  // isolation dir), which is not a user worktree — drop those observations so
+  // they cannot poison the stamp. Among main-agent observations,
+  // first-stamp-wins.
   const liveCwd = input.cwd || null;
-  const worktreeCwd = (!existing.worktree_cwd && liveCwd && /\/worktrees\//.test(liveCwd))
-    ? liveCwd : null;
+  const isMainWorktree = liveCwd
+    && /\/worktrees\//.test(liveCwd)
+    && !/\/\.claude\/worktrees\//.test(liveCwd);
+  const worktreeCwd = (!existing.worktree_cwd && isMainWorktree) ? liveCwd : null;
   const hookEvent = input.hook_event_name;
   const toolName = input.tool_name || '';
   const permissionMode = input.permission_mode || '';
