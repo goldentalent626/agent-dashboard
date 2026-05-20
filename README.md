@@ -21,16 +21,11 @@ Both interfaces read agent state from per-agent JSON files in `~/.agent-dashboar
 
 **Do I need tmux?** Yes. agent-dashboard reads live pane content via `tmux capture-pane` and spawns agent sessions in tmux panes. Without tmux there are no panes to monitor.
 
-**Which agents are supported?** Claude Code is first-class via the adapter in `adapters/claude-code/`. A second adapter for [`@mariozechner/pi-coding-agent`](https://www.npmjs.com/package/@mariozechner/pi-coding-agent) lives in `adapters/pi/` (install with `make install-pi-adapter`); pi-mono's unified LLM API also lets you run OpenAI / codex `gpt-5.x` models inside the dashboard. Codex CLI is supported directly as a harness — its hook payload schema is 1:1 with Claude's, so the same `adapters/claude-code/` plugin works for codex sessions once registered with codex (see "How do I see codex agents in the dashboard?" below). Codex is also reachable via skill delegation (`/codex-delegate`). The architecture supports additional backends via the `domain.Harness` interface.
+**Which agents are supported?** Claude Code is first-class via the adapter in `adapters/claude-code/`. A second adapter for [`@mariozechner/pi-coding-agent`](https://www.npmjs.com/package/@mariozechner/pi-coding-agent) lives in `adapters/pi/` (install with `make install-pi-adapter`); pi-mono's unified LLM API also lets you run OpenAI / codex `gpt-5.x` models inside the dashboard. Codex CLI is supported directly as a harness with global Codex hooks installed by `install.sh` (see "How do I see codex agents in the dashboard?" below). Codex is also reachable via skill delegation (`/codex-delegate`). The architecture supports additional backends via the `domain.Harness` interface.
 
 **How do I use codex / gpt-5.x models?** Two routes: (1) pick `codex` in the New Agent harness step (TUI wizard or web form) to spawn the codex CLI directly, with per-spawn flags from `[harness.codex]` in `~/.agent-dashboard/settings.toml`. (2) Use pi-mono as a unified LLM proxy: set `[harness] default = "pi"` and `[harness.pi] provider = "openai" model = "openai-codex/gpt-5.5"`, configure your OpenAI key in `~/.pi/auth.json`, and restart the dashboard. See [adapters/pi/README.md](adapters/pi/README.md#codex--gpt-5x-models) for the pi-mono walkthrough.
 
-**How do I see codex agents in the dashboard?** Codex sessions only appear in the dashboard once you register the `agent-dashboard` plugin with codex — the dashboard reads agent state from `~/.agent-dashboard/agents/*.json`, and those files are written by hook scripts the plugin installs. Run `make install-codex-adapter` (or `codex plugin marketplace add bjornjee/agent-dashboard` directly), then add the following stanza to `~/.codex/config.toml` and restart codex:
-
-```toml
-[plugins."agent-dashboard@agent-dashboard"]
-enabled = true
-```
+**How do I see codex agents in the dashboard?** Codex sessions appear once the global Codex hooks are installed and approved. `install.sh` copies the hook runtime to `~/.codex/hooks/agent-dashboard` and copies `~/.codex/hooks.json` only if that file is missing. If you already have `~/.codex/hooks.json`, reconcile it with the template at `~/.codex/hooks/agent-dashboard/hooks.json`, then restart Codex and approve the `agent-dashboard` hooks prompt.
 
 **Does this require a paid Claude account?** No — it uses whatever Claude Code itself requires (Pro, Max, or API). agent-dashboard does not call the Anthropic API directly; it reads the JSONL transcripts Claude Code writes locally.
 
@@ -106,9 +101,10 @@ A companion PWA (`cmd/web/`) for dispatching and managing agents from your phone
 |------------|----------|---------|
 | [tmux](https://github.com/tmux/tmux) | Yes | Agent pane management and live capture |
 | [Claude Code](https://claude.com/claude-code) | Yes | The agents this dashboard monitors |
-| [Node.js 18+](https://nodejs.org/) | Yes | Claude Code adapter hooks |
+| [Node.js 18+](https://nodejs.org/) | Yes | Claude Code and Codex adapter hooks |
 | [git](https://git-scm.com/) | Yes | Diff viewer, branch detection |
 | [GitHub CLI (`gh`)](https://cli.github.com/) | No | Detects existing PRs so `g` opens the diff page instead of creating a new PR |
+| [Codex CLI](https://developers.openai.com/codex/) 0.130+ | No | Show Codex sessions in the dashboard |
 | [z (zsh plugin)](https://github.com/agkozak/zsh-z) | No | Frecency-ranked directory suggestions when creating sessions |
 
 ## Install
@@ -121,7 +117,7 @@ Download the pre-built binary from the latest [GitHub Release](https://github.co
 curl -fsSL https://raw.githubusercontent.com/bjornjee/agent-dashboard/main/install.sh | sh
 ```
 
-The installer downloads the binary for your platform, verifies its SHA256 checksum, and installs it to `~/.local/bin/agent-dashboard`. No Go toolchain required.
+The installer downloads the binary for your platform, verifies its SHA256 checksum, and installs it to `~/.local/bin/agent-dashboard`. It also copies Codex dashboard hooks to `~/.codex/hooks/agent-dashboard` and copies `~/.codex/hooks.json` when that file does not already exist. No Go toolchain required.
 
 Or build from source (requires [Go 1.26+](https://go.dev/dl/)):
 
@@ -155,13 +151,21 @@ Without it, skill-gated session types (feature, fix, refactor, pr, rca) will not
 
 ### Codex CLI support
 
-The plugin is also installable into the OpenAI [`codex` CLI](https://developers.openai.com/codex/) (0.130+). Codex auto-discovers the plugin manifest at `.claude-plugin/plugin.json` (per codex's `DISCOVERABLE_PLUGIN_MANIFEST_PATHS` in `codex-rs/utils/plugins/src/plugin_namespace.rs`) and registers our hooks as managed hooks alongside any you've configured manually.
+Codex support is installed by `install.sh`, not by editing the managed plugin cache. The installer only performs copy-if-missing actions: it copies the Codex hook bundle to `~/.codex/hooks/agent-dashboard` and copies the global hook template to `~/.codex/hooks.json` only when that file is absent.
 
-```
-codex plugin marketplace add bjornjee/agent-dashboard
+```bash
+curl -fsSL https://raw.githubusercontent.com/bjornjee/agent-dashboard/main/install.sh | sh
 ```
 
-Codex will prompt to trust the plugin's hooks on first run; once approved, the dashboard sees codex sessions just like Claude sessions — same state file, same conversation panel, same cost dashboard. Run `codex --model gpt-5.5` in a tmux pane and the agent appears in the dashboard's agent list.
+After installing, restart Codex sessions and approve the `agent-dashboard` hooks prompt. Once approved, the dashboard sees Codex sessions just like Claude sessions — same state file, same conversation panel, same cost dashboard. Run `codex --model gpt-5.5` in a tmux pane and the agent appears in the dashboard's agent list.
+
+If `~/.codex/hooks.json` already exists, the installer leaves it untouched. Review the template at `~/.codex/hooks/agent-dashboard/hooks.json` and reconcile it with your existing Codex hooks before restarting Codex.
+
+From a repo checkout, rerun the source installer after pulling changes:
+
+```bash
+./install.sh --build
+```
 
 Caveats specific to codex:
 
@@ -254,7 +258,7 @@ Or if you set up the tmux keybinding, press `prefix + D` to switch to a dedicate
 
 ## User Settings
 
-The dashboard supports a TOML configuration file at `~/.agent-dashboard/settings.toml` (or `$AGENT_DASHBOARD_DIR/settings.toml` if overridden). The installer creates this from [`settings.example.toml`](settings.example.toml). Any missing keys fall back to sensible defaults — you only need to include the settings you want to change.
+The dashboard supports a TOML configuration file at `~/.agent-dashboard/settings.toml` (or `$AGENT_DASHBOARD_DIR/settings.toml` if overridden). From a repo checkout, the installer copies this from [`settings.example.toml`](settings.example.toml) when the destination file does not already exist. Any missing keys fall back to sensible defaults — you only need to include the settings you want to change.
 
 Example `settings.toml`:
 
@@ -348,7 +352,7 @@ agent-dashboard/
 ├── LICENSE
 ├── SECURITY.md
 ├── release-please-config.json
-├── install.sh                         # installer (accepts adapter name, default: claude-code)
+├── install.sh                         # binary installer plus copy-if-missing Codex hook install
 ├── agent-dashboard.tmux               # optional tmux keybinding (prefix + D)
 ├── settings.example.toml              # default settings (copied by install.sh)
 ├── go.mod / go.sum
