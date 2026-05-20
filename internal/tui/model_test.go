@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	"github.com/bjornjee/agent-dashboard/internal/conversation"
 	"github.com/bjornjee/agent-dashboard/internal/domain"
 	"github.com/bjornjee/agent-dashboard/internal/repowin"
+	"github.com/bjornjee/agent-dashboard/internal/tmux"
 	"github.com/bjornjee/agent-dashboard/internal/zsuggest"
 )
 
@@ -370,6 +372,136 @@ func TestReplyMode_PlanStateSendsEscape(t *testing.T) {
 	if m.mode != modeReply {
 		t.Fatalf("expected modeReply, got %d", m.mode)
 	}
+}
+
+func TestReplyMode_CodexPlanDoesNotSendEscape(t *testing.T) {
+	m := NewModel(testConfig(""), nil)
+	m.width = 120
+	m.height = 40
+	m.resizeViewports()
+	m.agents = []domain.Agent{
+		{Target: "main:2.0", TmuxPaneID: "%5", Window: 2, Pane: 0, State: "plan", Harness: "codex", Cwd: "/tmp"},
+	}
+	m.buildTree()
+	m.selected = 1
+	m.tmuxAvailable = true
+
+	result, cmd := m.handleKey(tea.KeyPressMsg{Code: 'r', Text: "r"})
+	updated := result.(model)
+
+	if updated.mode != modeReply {
+		t.Fatalf("expected modeReply, got %d", updated.mode)
+	}
+	if commandEmitsRawKeySent(cmd) {
+		t.Fatal("codex plan reply must not send Escape; codex has no Claude-style plan feedback prompt")
+	}
+}
+
+type recordingTmuxRunner struct {
+	runs [][]string
+}
+
+func (r *recordingTmuxRunner) Output(_ context.Context, _ ...string) ([]byte, error) {
+	return []byte("main:2.1\n"), nil
+}
+
+func (r *recordingTmuxRunner) Run(_ context.Context, args ...string) error {
+	r.runs = append(r.runs, append([]string(nil), args...))
+	return nil
+}
+
+func TestReplyMode_CodexRunningReplyQueuesMessage(t *testing.T) {
+	runner := &recordingTmuxRunner{}
+	restore := tmux.SetTestRunner(runner)
+	t.Cleanup(restore)
+
+	m := NewModel(testConfig(""), nil)
+	m.agents = []domain.Agent{
+		{Target: "main:2.0", TmuxPaneID: "%5", Window: 2, Pane: 0, State: "running", Harness: "codex", Cwd: "/tmp"},
+	}
+	m.mode = modeReply
+	m.textInput.SetValue("continue the PR")
+	m.buildTree()
+	m.selected = 1
+
+	result, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	updated := result.(model)
+	if updated.mode != modeNormal {
+		t.Fatalf("expected modeNormal after reply submit, got %d", updated.mode)
+	}
+	if cmd == nil {
+		t.Fatal("expected reply command")
+	}
+	cmd()
+
+	want := [][]string{
+		{"send-keys", "-t", "main:2.1", "C-u"},
+		{"set-buffer", "-b", "agent-dashboard-reply", "--", "continue the PR"},
+		{"paste-buffer", "-p", "-r", "-d", "-b", "agent-dashboard-reply", "-t", "main:2.1"},
+		{"send-keys", "-t", "main:2.1", "Tab"},
+		{"send-keys", "-t", "main:2.1", "Enter"},
+	}
+	if fmt.Sprint(runner.runs) != fmt.Sprint(want) {
+		t.Fatalf("tmux calls = %#v, want %#v", runner.runs, want)
+	}
+}
+
+func TestReplyMode_CodexWaitingReplySubmitsMessage(t *testing.T) {
+	runner := &recordingTmuxRunner{}
+	restore := tmux.SetTestRunner(runner)
+	t.Cleanup(restore)
+
+	m := NewModel(testConfig(""), nil)
+	m.agents = []domain.Agent{
+		{Target: "main:2.0", TmuxPaneID: "%5", Window: 2, Pane: 0, State: "waiting", Harness: "codex", Cwd: "/tmp"},
+	}
+	m.mode = modeReply
+	m.textInput.SetValue("continue the PR")
+	m.buildTree()
+	m.selected = 1
+
+	result, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	updated := result.(model)
+	if updated.mode != modeNormal {
+		t.Fatalf("expected modeNormal after reply submit, got %d", updated.mode)
+	}
+	if cmd == nil {
+		t.Fatal("expected reply command")
+	}
+	cmd()
+
+	want := [][]string{
+		{"send-keys", "-t", "main:2.1", "C-u"},
+		{"set-buffer", "-b", "agent-dashboard-reply", "--", "continue the PR"},
+		{"paste-buffer", "-p", "-r", "-d", "-b", "agent-dashboard-reply", "-t", "main:2.1"},
+		{"send-keys", "-t", "main:2.1", "Enter"},
+	}
+	if fmt.Sprint(runner.runs) != fmt.Sprint(want) {
+		t.Fatalf("tmux calls = %#v, want %#v", runner.runs, want)
+	}
+}
+
+func commandEmitsRawKeySent(cmd tea.Cmd) bool {
+	if cmd == nil {
+		return false
+	}
+	msg := cmd()
+	if _, ok := msg.(rawKeySentMsg); ok {
+		return true
+	}
+	batch, ok := msg.(tea.BatchMsg)
+	if !ok {
+		return false
+	}
+	for _, c := range batch {
+		if c == nil {
+			continue
+		}
+		if _, ok := c().(rawKeySentMsg); ok {
+			return true
+		}
+	}
+	return false
 }
 
 func TestReplyMode_SendReplyFailureShowsError(t *testing.T) {

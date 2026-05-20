@@ -266,6 +266,19 @@ func TestExtractSessionWindow(t *testing.T) {
 	}
 }
 
+func TestTmuxPasteKeysClearingInputClearsPastesThenSubmits(t *testing.T) {
+	r := withMockRunner(t)
+	r.On("Run", mock.Anything, "send-keys", "-t", "main:2.1", "C-u").Return(nil).Once()
+	r.On("Run", mock.Anything, "set-buffer", "-b", "agent-dashboard-reply", "--", "fix the test").Return(nil).Once()
+	r.On("Run", mock.Anything, "paste-buffer", "-p", "-r", "-d", "-b", "agent-dashboard-reply", "-t", "main:2.1").Return(nil).Once()
+	r.On("Run", mock.Anything, "send-keys", "-t", "main:2.1", "Tab").Return(nil).Once()
+	r.On("Run", mock.Anything, "send-keys", "-t", "main:2.1", "Enter").Return(nil).Once()
+
+	if err := TmuxPasteKeysClearingInput("main:2.1", "fix the test", "Tab", "Enter"); err != nil {
+		t.Fatalf("TmuxPasteKeysClearingInput() error = %v", err)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Mocked tests (using testify mock Runner — no exec at all)
 // ---------------------------------------------------------------------------

@@ -493,14 +493,20 @@ func isSelfPane(paneID, selfPaneID string) bool {
 	return selfPaneID != "" && paneID == selfPaneID
 }
 
-func sendReply(paneID, text, selfPaneID string) tea.Cmd {
+func sendReply(agent domain.Agent, text, selfPaneID string) tea.Cmd {
 	return func() tea.Msg {
-		if isSelfPane(paneID, selfPaneID) {
-			return sendResultMsg{err: fmt.Errorf("refusing to send to dashboard pane %s", paneID)}
+		if isSelfPane(agent.TmuxPaneID, selfPaneID) {
+			return sendResultMsg{err: fmt.Errorf("refusing to send to dashboard pane %s", agent.TmuxPaneID)}
 		}
-		target := tmux.ResolveTarget(paneID)
+		target := tmux.ResolveTarget(agent.TmuxPaneID)
 		if target == "" {
-			return sendResultMsg{err: fmt.Errorf("pane %s no longer exists", paneID)}
+			return sendResultMsg{err: fmt.Errorf("pane %s no longer exists", agent.TmuxPaneID)}
+		}
+		if agent.Harness == "codex" {
+			if agent.State == "running" {
+				return sendResultMsg{err: tmux.TmuxPasteKeysClearingInput(target, text, "Tab", "Enter")}
+			}
+			return sendResultMsg{err: tmux.TmuxPasteKeysClearingInput(target, text, "Enter")}
 		}
 		return sendResultMsg{err: tmux.TmuxSendKeys(target, text)}
 	}

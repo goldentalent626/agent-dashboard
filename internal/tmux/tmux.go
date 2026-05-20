@@ -164,9 +164,15 @@ func TmuxSelectPane(target string) error {
 // tmux silently truncates text beyond its internal paste/input buffer (~1 KB).
 const sendKeysChunkSize = 512
 
+const pasteBufferName = "agent-dashboard-reply"
+
 // TmuxSendKeys sends text literally to a tmux pane, followed by Enter.
 // Long text is split into chunks to avoid tmux's input buffer truncation.
 func TmuxSendKeys(target, text string) error {
+	return tmuxSendKeysWithSubmit(target, text, "Enter")
+}
+
+func tmuxSendKeysWithSubmit(target, text string, submitKeys ...string) error {
 	for len(text) > 0 {
 		chunk := text
 		if len(chunk) > sendKeysChunkSize {
@@ -180,9 +186,58 @@ func TmuxSendKeys(target, text string) error {
 			return err
 		}
 	}
+	return tmuxSendSubmitKeys(target, submitKeys...)
+}
+
+func tmuxSendSubmitKeys(target string, submitKeys ...string) error {
+	for _, key := range submitKeys {
+		ctx, cancel := context.WithTimeout(context.Background(), Timeout)
+		err := runner.Run(ctx, "send-keys", "-t", target, key)
+		cancel()
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func TmuxSendKeysClearingInput(target, text string, submitKeys ...string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), Timeout)
-	defer cancel()
-	return runner.Run(ctx, "send-keys", "-t", target, "Enter")
+	err := runner.Run(ctx, "send-keys", "-t", target, "C-u")
+	cancel()
+	if err != nil {
+		return err
+	}
+	return tmuxSendKeysWithSubmit(target, text, submitKeys...)
+}
+
+func TmuxPasteKeysClearingInput(target, text string, submitKeys ...string) error {
+	if err := ValidateTarget(target); err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), Timeout)
+	err := runner.Run(ctx, "send-keys", "-t", target, "C-u")
+	cancel()
+	if err != nil {
+		return err
+	}
+
+	ctx, cancel = context.WithTimeout(context.Background(), Timeout)
+	err = runner.Run(ctx, "set-buffer", "-b", pasteBufferName, "--", text)
+	cancel()
+	if err != nil {
+		return err
+	}
+
+	ctx, cancel = context.WithTimeout(context.Background(), Timeout)
+	err = runner.Run(ctx, "paste-buffer", "-p", "-r", "-d", "-b", pasteBufferName, "-t", target)
+	cancel()
+	if err != nil {
+		return err
+	}
+
+	return tmuxSendSubmitKeys(target, submitKeys...)
 }
 
 // TmuxSendRaw sends a single key to a tmux pane without Enter.
