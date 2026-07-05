@@ -1,0 +1,191 @@
+---
+name: refactor
+description: Safely restructure code in an isolated git worktree with test-preserved, incremental transformations
+disable-model-invocation: true
+effort: max
+---
+<!-- codex-only -->
+
+<codex_skill_must>
+1. Run `mkdir -p` and `git worktree add -b refactor/<name> ... main` as separate `exec_command` calls.
+2. Run the scoped baseline proof before editing; halt if it fails.
+3. Make one behavior-preserving change, then rerun that proof; repeat.
+4. Allowed tools: `exec_command`, `apply_patch`, `spawn_agent`, `wait_agent`.
+5. Every `spawn_agent` call must be followed by `wait_agent`.
+</codex_skill_must>
+<!-- /codex-only -->
+
+Safely refactor code while preserving all existing behavior.
+
+Refactoring goal: $ARGUMENTS
+
+## Instructions
+
+Follow these phases in order. Each phase has a gate — do not proceed until the gate is satisfied. Apply all project rules and conventions that are in your context.
+
+If the refactor touches browser UI, Playwright, dev-server ports, screenshots, or interactive Browser/Chrome inspection, apply `../_shared/ui-automation.md` at scoping, environment setup, baseline, verification, delegation, and cleanup points.
+
+---
+
+### Phase 1: Setup
+
+1. Derive a short kebab-case name from the refactoring goal.
+2. Derive the app name from the git repo: `basename $(git rev-parse --show-toplevel)`
+3. Switch to main: `git checkout main`
+4. Pull latest: `git pull origin main`
+<!-- claude-only -->
+5. Create branch `refactor/<name>` and worktree `../worktrees/<app>/<name>` from main:
+   `mkdir -p ../worktrees/<app> && git worktree add ../worktrees/<app>/<name> -b refactor/<name> main`
+<!-- /claude-only -->
+<!-- codex-only -->
+5. Create branch `refactor/<name>` and worktree `../worktrees/<app>/<name>` from main. Run **two separate `exec_command` tool calls** — do not chain them with `&&`. The dashboard's PostToolUse hook only stamps `worktree_cwd` + `branch` when the command starts with `git worktree add`; a compound `mkdir … && git worktree add …` slips past the regex and leaves the dashboard unable to detect dir or branch.
+
+   First, ensure the parent directory exists:
+   ```
+   mkdir -p ../worktrees/<app>
+   ```
+   Then run `git worktree add -b refactor/<name> ../worktrees/<app>/<name> main` as its own `exec_command` tool call:
+   ```
+   git worktree add -b refactor/<name> ../worktrees/<app>/<name> main
+   ```
+<!-- /codex-only -->
+   - If the branch already exists, ask the user whether to resume it or choose a new name.
+6. **From the source repo root** (before cd'ing), copy environment files into the worktree **preserving their exact relative path from the project root**:
+   - Find all env files recursively: `find . -name '.env*' -not -name '.env-setup-done' -not -name '.env-setup-failed' -not -path './.git/*' -not -path './node_modules/*'`
+   - For each file found, recreate its directory structure in the worktree and copy it. For example:
+     - `./.env` → `../worktrees/<app>/<name>/.env`
+     - `./services/api/.env.local` → `../worktrees/<app>/<name>/services/api/.env.local`
+   - Use: `for f in $(find . -name '.env*' -not -name '.env-setup-done' -not -name '.env-setup-failed' -not -path './.git/*' -not -path './node_modules/*'); do mkdir -p "../worktrees/<app>/<name>/$(dirname "$f")" && cp "$f" "../worktrees/<app>/<name>/$f"; done`
+   - If `.claude/settings.local.json` exists: `mkdir -p ../worktrees/<app>/<name>/.claude && cp .claude/settings.local.json ../worktrees/<app>/<name>/.claude/`
+<!-- claude-only -->
+   - **Important:** All Bash tool calls in this step must set `dangerouslyDisableSandbox: true` because they write outside the project root.
+7. cd into the worktree, run `node "${CLAUDE_PLUGIN_ROOT:-$(ls -dt "$HOME/.claude/plugins/cache/agent-dashboard/agent-dashboard"/* 2>/dev/null | head -1)}/scripts/hooks/claim-worktree.js"`, and confirm with `pwd` and `git branch --show-current`
+<!-- /claude-only -->
+<!-- codex-only -->
+   - **Important:** Commands in this step write outside the project root. Use Codex escalation (`sandbox_permissions: "require_escalated"`) with a concise justification; do not try to route around approvals.
+7. cd into the worktree, run `node "${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-$(ls -dt "${CODEX_HOME:-$HOME/.codex}/plugins/cache/agent-dashboard/agent-dashboard"/* 2>/dev/null | head -1)}}/hooks/claim-worktree.js"`, and confirm with `pwd` and `git branch --show-current`
+<!-- /codex-only -->
+8. Verify: compare env files between source and worktree. Run the same `find` command in both directories and diff the file lists. If any files are missing in the worktree, **halt and report failure**. If the source repo had no `.env*` files, note that explicitly.
+
+**Gate:** Working directory is the new worktree on the correct branch, based on latest main. If `.env*` files existed in the source repo, they are all present in the worktree.
+
+---
+
+### Phase 2: Scope
+
+Start two tracks in parallel:
+
+<!-- claude-only -->
+**Background — Environment setup:** Launch a background agent (`run_in_background: true`) to set up the dev environment. The agent must:
+<!-- /claude-only -->
+<!-- codex-only -->
+**Background — Environment setup:** Launch a background `exec_command` to set up the dev environment. It must:
+<!-- /codex-only -->
+
+1. Auto-detect project type from project files (highest match wins):
+
+   | Priority | Signal | Type |
+   |----------|--------|------|
+   | 1 | `react-native` in package.json dependencies | Mobile |
+   | 2 | `next`, `vite`, or `webpack` in package.json | Web |
+   | 3 | `requirements.txt`, `pyproject.toml`, or `setup.py` | Python |
+   | 4 | `go.mod` | Go |
+   | 5 | `Dockerfile` or `docker-compose.yml` | Containerized |
+
+   Ask the user only if no signal matches.
+
+2. Install dependencies appropriate for the project type (e.g. `pip install`, `npm install`, `go mod download`). Configure ports, create emulators/simulators as needed. For browser UI refactors, allocate worktree-local Playwright/server/profile/output resources per `../_shared/ui-automation.md`.
+3. Symlink large source-content directories (`data/`, `datasets/`, `evals/`, `models/`, `artifacts/`) from the source repo rather than copying. NEVER symlink build outputs or per-project caches (`.next/`, `dist/`, `build/`, `out/`, `target/`, `.turbo/`, `.cache/`, `.parcel-cache/`, `.vite/`, `__pycache__/`, `.pytest_cache/`, `.gradle/`, `.venv/`, `node_modules/`) — they bake absolute paths and corrupt across worktrees, and must be regenerated per-worktree.
+4. On success, write a sentinel file: `touch .env-setup-done`
+   On failure, write the error: `echo "<error message>" > .env-setup-failed`
+
+**Foreground — Scoping:**
+
+1. Parse the refactoring goal — what is being restructured and why?
+2. Identify all affected files by searching the codebase for the code to be changed and its dependents.
+3. Check test coverage for the affected code — what tests exist? What is untested?
+4. If test coverage is insufficient for safe refactoring, **tell the user** and suggest writing tests first before refactoring.
+
+**Gate:** The scope is clear. Affected files and their test coverage are identified.
+
+---
+
+### Phase 3: Baseline
+
+**Pre-gate:** Check for `.env-setup-done` in the worktree root.
+- If present: verify dependencies are installed (e.g. `node_modules/` exists, `pip list` succeeds, `go env GOPATH` works) and data symlinks resolve correctly.
+- If `.env-setup-failed` exists: surface the error and halt.
+- If neither file exists: the background agent is still running — wait for it to finish before proceeding.
+
+1. Choose a baseline proof command from the affected scope. Prefer the smallest package/test command that covers the code being moved; use full `make test`/`make test-fast` when the refactor crosses packages, touches shared infrastructure, or cannot be bounded.
+2. Run that baseline proof command.
+3. If it fails, **stop and report**. Do not refactor on a broken codebase. Suggest using `/agent-dashboard:fix` first.
+4. Record the command and output as the regression baseline.
+
+For UI baselines, prefer headless Playwright with worktree-local resources. Use interactive Browser/Chrome inspection only when the shared policy says it is warranted.
+
+**Gate:** The scoped baseline passes. The proof command is recorded.
+
+---
+
+### Phase 4: Transform
+
+<!-- claude-only -->
+**Effort note:** When launched via the agent-dashboard's New Agent flow, this skill spawns with `--effort high` on the CLI, which Claude Code pins at the session level. The dynamic dispatcher in agent-state-fast.js bumps effort to `max` automatically while `permission_mode='plan'` (EnterPlanMode active) and drops back to `high` on exit — so planning runs at max effort without paying that cost during implementation. When invoked as a slash command inside an existing claude session, you can run `/effort max` before entering plan mode and `/effort high` (or lower) before implementation.
+<!-- /claude-only -->
+<!-- codex-only -->
+**Effort note:** When launched via the agent-dashboard's New Agent flow, this skill starts at implementation effort. Use Codex Plan Mode for high-reasoning scoping when the refactor needs it, then return to proportional implementation effort for the mechanical transformation.
+<!-- /codex-only -->
+
+<!-- claude-only -->
+**Delegation gate:** Invoke `/codex:setup` to check Codex CLI availability. If the output contains `"ready": true`, delegate **only if** the user explicitly requested Codex delegation OR the refactor touches 10+ files / ~3,000+ lines of implementation. Below that threshold, the orchestration overhead costs more tokens than Claude implementing directly. If delegating, invoke `/codex-delegate` with the scope (Phase 2) and baseline (Phase 3) as implementation context, then skip to the phase gate. Otherwise, proceed below.
+<!-- /claude-only -->
+<!-- codex-only -->
+**Delegation gate:** Use Codex `spawn_agent` **only if** the user explicitly requested subagents OR the refactor touches 10+ files / ~3,000+ lines of implementation. Below that threshold, the orchestration overhead costs more tokens than implementing directly. If delegating, pass the scope (Phase 2), baseline (Phase 3), exact file paths, and a bounded write scope to a `worker`; then call `wait_agent`, review the result, and verify locally. Otherwise, proceed below.
+<!-- /codex-only -->
+
+Apply the refactoring in small, atomic steps. For each step:
+
+1. Make a single, focused change (e.g., extract a function, rename a variable, move a file).
+2. Run the baseline proof command immediately after the change.
+3. If tests fail:
+   - Revert only the changed files (`git checkout -- <file1> <file2> ...`)
+   - Analyze why it failed
+   - Try a different approach
+4. If tests pass, proceed to the next step.
+
+Do not batch multiple changes between proof runs. One change, one proof run.
+
+**Gate:** All transformations applied. The scoped proof passes after each step.
+
+---
+
+### Phase 5: Cleanup
+
+1. Remove dead code — unused imports, functions, variables, files.
+2. Update any affected documentation or comments.
+3. Run the baseline proof one final time; run full `make test`/`make test-fast` only if the cleanup widened the scope.
+
+**Gate:** No dead code remains. The relevant proof passes.
+
+---
+
+### Phase 6: Review, Commit, and Open PR
+
+1. Review all changes for correctness, security, and convention adherence.
+2. Verify that behavior is preserved — no new features, no bug fixes, only structural changes.
+3. Commit with a `refactor:` conventional commit message that describes what was restructured and why.
+4. Open the PR by invoking **`/agent-dashboard:pr`**. That skill owns conditional cleanup/formatting, final test gating when available, push, and `gh pr create`. Do not call `gh pr create` directly — a `pr-skill-gate` hook will block it.
+
+**Gate:** Clean commit with conventional message. Behavior is unchanged. No critical or high-severity review issues. PR opened via `/agent-dashboard:pr`.
+
+---
+
+### Phase 7: Cleanup (on merge)
+
+Triggered when the user indicates the refactor has been merged upstream.
+
+1. Verify the branch is merged (warn if unmerged commits remain)
+2. Tear down environment resources: remove symlinks, stop dev servers or emulators, release any browser lease, remove worktree-local UI scratch state, delete `.env-setup-done`/`.env-setup-failed` sentinel files
+3. Remove worktree and delete branch
+4. Confirm cleanup is complete
