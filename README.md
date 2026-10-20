@@ -6,8 +6,6 @@ A tmux-integrated orchestrator and dispatcher for AI coding agents — Claude Co
 
 https://github.com/user-attachments/assets/01aa0f85-cfd4-4dc3-ac46-651bcfc03f99
 
-**Documentation: [bjornjee.github.io/agent-dashboard](https://bjornjee.github.io/agent-dashboard/)** — getting started, guides, keybindings, settings, and architecture.
-
 ## Why agent-dashboard?
 
 - **One pane for many agents.** Stop alt-tabbing between tmux panes — see every agent grouped by state (blocked, waiting, running, review, PR, merged) in a single TUI, with live pane capture so you don't lose context when you switch.
@@ -21,8 +19,6 @@ https://github.com/user-attachments/assets/01aa0f85-cfd4-4dc3-ac46-651bcfc03f99
 **TUI** — real-time agent monitoring with live tmux pane capture, subagent tree, conversation history, GitHub-style split-pane diff viewer, plan and mermaid-diagram viewers, per-agent token/cost dashboard with live rate-limit bars, session creation with frecency-ranked paths and skill/model/effort selection, a search palette (`/`) that also resumes orphaned sessions, quick replies and numbered-option sends, and a full GitHub PR workflow (create, review diff, merge via `gh`).
 
 **Mobile companion** — an installable PWA with the same state grouping, full remote control (approve/reject, reply, stop, PR create/merge/close), session creation, browser notifications, usage dashboard, live updates over Server-Sent Events, and optional single-user Google OAuth.
-
-See the [guides](https://bjornjee.github.io/agent-dashboard/guides/) for walkthroughs and the [reference](https://bjornjee.github.io/agent-dashboard/reference/) for the full keybinding and settings tables.
 
 ## FAQ
 
@@ -61,9 +57,6 @@ See the [guides](https://bjornjee.github.io/agent-dashboard/guides/) for walkthr
 ```bash
 curl -fsSL https://raw.githubusercontent.com/bjornjee/agent-dashboard/main/install.sh | sh
 ```
-
-The installer downloads the binary for your platform from the latest [GitHub Release](https://github.com/bjornjee/agent-dashboard/releases), verifies its SHA256 checksum, and installs it to `~/.local/bin/agent-dashboard`. No Go toolchain required.
-
 Or build from source (requires [Go 1.26+](https://go.dev/dl/)):
 
 ```bash
@@ -85,8 +78,6 @@ In any Claude Code session, run:
 Then restart Claude Code sessions for hooks and skills to take effect.
 
 ### Recommended companion plugins
-
-`agent-dashboard` works best when paired with [`bjornjee/skills`](https://github.com/bjornjee/skills) — a plugin of workflow skills (TDD guide, language-specific strict reviewers, refactor cleaner, codex delegation, terminal ops) that the dashboard's session-creation flow expects:
 
 ```
 /marketplace add bjornjee/skills
@@ -154,13 +145,7 @@ Or press `prefix + D` if you set up the tmux keybinding. The keys you'll use mos
 | `g` / `m` | Open/create PR / merge PR |
 | `h` | Help overlay with all keybindings |
 
-The full tables — including the diff viewer and search palette keys — are in the [keybindings reference](https://bjornjee.github.io/agent-dashboard/reference/keybindings/).
-
 ## Configuration
-
-The dashboard reads a TOML file at `~/.agent-dashboard/settings.toml` — banner, notifications, usage polling, thinking-effort defaults, and the harness picker (`claude` or `codex`) all live there. Missing keys fall back to sensible defaults; see [`settings.example.toml`](settings.example.toml) and the [settings reference](https://bjornjee.github.io/agent-dashboard/reference/settings/) for every key, default, and environment variable.
-
-## Development
 
 Requires [Go 1.26+](https://go.dev/dl/).
 
@@ -172,8 +157,6 @@ make web         # Run the mobile companion locally on port 8390
 make gen-skills  # Regenerate adapter skills from adapters/skills-src/
 make help        # Show all targets
 ```
-
-Workflow skills are generated: edit `adapters/skills-src/`, run `make gen-skills`, and never hand-edit `adapters/claude-code/skills/` or `adapters/codex/skills/`. Architecture, package layout, and contribution guidelines are in the [development docs](https://bjornjee.github.io/agent-dashboard/development/).
 
 ## License
 
